@@ -26,7 +26,7 @@ For production, prefer promotion pull requests and immutable digests, protected 
 | Path | Purpose |
 | --- | --- |
 | `app/` | Dependency-free Node.js website, HTTP tests, Dockerfile |
-| `.github/workflows/ci.yaml` | Test PRs/main; publish versioned Git releases through OIDC |
+| `.github/workflows/ci.yaml` | Test and publish only on `v*` Git tag pushes through OIDC |
 | `infra/kind/` | Single-node local cluster |
 | `infra/argocd/` | Pinned Argo CD installation |
 | `infra/image-updater/` | Pinned Image Updater v1 installation and polling configuration |
@@ -46,7 +46,7 @@ Image tag: 1.0.1
 
 - ECR must enforce **IMMUTABLE** tags. Never deploy a mutable `latest` tag.
 - Only stable MAJOR.MINOR.PATCH versions without leading zeros are accepted. CI verifies the tagged commit belongs to main history before obtaining AWS credentials.
-- Main pushes and PRs run tests but do not publish. Tag pushes run even when no application paths changed; GitHub does not apply path filters to tag pushes.
+- Only `v*` tag pushes start the workflow. Branch pushes, PRs, and merges do not run CI; manual dispatch is disabled. Run `npm --prefix app test` locally before merging. Do not require this tag-only workflow as a PR status check.
 - Image Updater uses semantic-version ordering, so `1.10.0` is newer than `1.9.0`. Old `main-*`, hash, and prerelease tags are ignored.
 - A version can be published only once. CI rejects an existing version; after a partial publish, inspect ECR and use a new version rather than deleting or moving release tags. Never rebuild a published version.
 - The build embeds its tag, full source SHA, and build time in `/version` and on the page. CI records the manifest digest too.
@@ -118,7 +118,7 @@ Set these GitHub repository **Actions variables**, not AWS access-key secrets:
 | `AWS_REGION` | `us-east-1` |
 | `ECR_REPOSITORY` | `demo-web` |
 
-Commit and push the scaffold to `main` using your normal Git setup. Main pushes run tests; release tags build `linux/amd64` and `linux/arm64`, attach provenance/SBOM, and publish an image. Do not initialize a second repository if this directory is already inside one. For a completely new repository:
+Commit and push the scaffold to `main` using your normal Git setup. Main pushes do not start CI; release tags run tests, build `linux/amd64` and `linux/arm64`, attach provenance/SBOM, and publish an image. Do not initialize a second repository if this directory is already inside one. For a completely new repository:
 
 ```bash
 git init -b main
@@ -135,7 +135,7 @@ git tag v1.0.1
 git push origin v1.0.1
 ```
 
-Wait for the successful release build. Set the local overlay's `newTag` to `1.0.1`, commit, and push. This prevents a first deployment from pulling the intentionally nonexistent `bootstrap` image. GitOps-only commits do not trigger another image build. A manual workflow run only publishes when it targets a release tag, not a branch. For later releases, increment the version, for example `v1.0.2`.
+Wait for the successful release build. Set the local overlay's `newTag` to `1.0.1`, commit, and push. This prevents a first deployment from pulling the intentionally nonexistent `bootstrap` image. GitOps-only commits do not trigger another image build. Manual workflow dispatch is disabled. For later releases, increment the version, for example `v1.0.2`.
 
 ## 4. Bootstrap kind and Argo CD
 

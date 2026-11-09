@@ -1,16 +1,7 @@
 name: Build and publish
 on:
-  pull_request:
-    paths:
-      - app/**
-      - .github/workflows/ci.yaml
   push:
-    branches: [main]
     tags: ['v*']
-    paths:
-      - app/**
-      - .github/workflows/ci.yaml
-  workflow_dispatch:
 
 permissions:
   contents: read
