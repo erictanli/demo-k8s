@@ -194,7 +194,11 @@ This is deliberately **not unattended credential rotation**. In a long-running i
 
 ## 7. Open the Demo
 
-Run each port-forward in its own terminal. Both bind to localhost by default; do not expose the Argo admin interface publicly.
+The website is available at `http://127.0.0.1:8080` without a port-forward. kind maps localhost port 8080 to node port 30080. The Application's `spec.source.kustomize.patches` configures the website Service as NodePort 30080; Argo CD applies it and Kubernetes routes traffic to ready pods as they are replaced. This bootstrap-level patch keeps the shared Service base unchanged.
+
+Existing clusters must be recreated to add or change kind host-port mappings. Editing the configuration does not update an existing node container. Recreating the cluster removes its workloads, secrets, and Argo CD history; restore access credentials before reapplying the Application. Do not start a website port-forward on port 8080, which is now reserved by kind.
+
+Only the Argo CD admin UI needs a port-forward. Keep it in its own terminal and do not expose it publicly:
 
 ```bash
 kubectl --context kind-interview-demo -n argocd port-forward svc/argocd-server 8443:443
@@ -207,11 +211,7 @@ kubectl --context kind-interview-demo -n argocd get secret argocd-initial-admin-
   -o jsonpath='{.data.password}' | base64 --decode; printf '\n'
 ```
 
-```bash
-kubectl --context kind-interview-demo -n demo port-forward svc/demo-web 8080:80
-```
-
-Open `http://localhost:8080`. During a rollout, the pod selected by port-forward can terminate; restart the command if necessary. A production ingress/load balancer would avoid that demo-only inconvenience.
+Open the website at `http://127.0.0.1:8080`. Unlike a pod-bound port-forward, the host mapping remains available during application rollouts while ready endpoints exist. The local cluster and Docker runtime must still be running.
 
 ## 8. Interview Walkthrough
 
@@ -248,10 +248,10 @@ Allow any in-flight reconciliation to settle before the revert and confirm no ne
 
 ```bash
 npm --prefix app test
-npm --prefix app start
+PORT=8090 npm --prefix app start
 ```
 
-The local website runs at `http://localhost:8080`; stop the service port-forward first if it already occupies that port. To check the deployment without a cluster:
+The development server runs at `http://localhost:8090`; the deployed website uses port 8080 through kind. To check the deployment without a cluster:
 
 ```bash
 kubectl kustomize gitops/apps/demo-web/overlays/local
@@ -273,7 +273,8 @@ The remote controller manifests require internet access. Resolve/pin image diges
 | Updater never chooses tag | Stable semantic version, correct repository, updater logs; old `main-*` tags are ignored |
 | Git write-back fails | Write-enabled deploy key, correct SSH repo URL, main branch protection, verified known-hosts |
 | Argo CD is OutOfSync | Git access, correct path/branch, controller logs, Application conditions |
-| Website still looks old | `/version`, current pod image, Git sync status, browser refresh, restart port-forward |
+| Website still looks old | `/version`, current pod image, Git sync status, browser refresh |
+| Website cannot connect | Docker/kind running, node mapping 8080 to 30080, Service NodePort 30080, ready endpoints; no website port-forward needed |
 
 ```bash
 kind delete cluster --name interview-demo

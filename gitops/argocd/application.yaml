@@ -9,6 +9,23 @@ spec:
     repoURL: git@github.com:erictanli/demo-k8s.git
     targetRevision: main
     path: gitops/apps/demo-web/overlays/local
+    kustomize:
+      patches:
+        - target:
+            kind: Service
+            name: demo-web
+          patch: |-
+            apiVersion: v1
+            kind: Service
+            metadata:
+              name: demo-web
+            spec:
+              type: NodePort
+              ports:
+                - name: http
+                  port: 80
+                  targetPort: http
+                  nodePort: 30080
   destination:
     server: https://kubernetes.default.svc
     namespace: demo
