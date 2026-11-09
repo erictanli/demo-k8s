@@ -10,7 +10,7 @@ Yes. It demonstrates CI/CD separation, workload identity, artifact traceability,
 
 ```mermaid
 flowchart LR
-  Developer[Push app change to main] --> CI[GitHub Actions: test and build]
+  Developer[Push release tag v1.0.1] --> CI[GitHub Actions: test and build]
   CI -->|AWS OIDC role| ECR[AWS ECR: immutable image]
   ECR -->|poll tags| Updater[Image Updater on kind]
   Updater -->|commit image tag| Git[Git: local Kustomize overlay]
@@ -19,14 +19,14 @@ flowchart LR
   ECR -->|authenticated image pull| App
 ```
 
-For production, prefer promotion pull requests and immutable digests, protected environments, externally managed credentials, image signing and vulnerability gates. Automatic deployment of every main build is intentional for this **development demo**, not a production release policy.
+For production, prefer promotion pull requests and immutable digests, protected environments, externally managed credentials, image signing and vulnerability gates. Automatic deployment of eligible versioned releases is intentional for this **development demo**, not a production approval policy.
 
 ## Layout
 
 | Path | Purpose |
 | --- | --- |
 | `app/` | Dependency-free Node.js website, HTTP tests, Dockerfile |
-| `.github/workflows/ci.yaml` | Test pull requests; build and push main builds through OIDC |
+| `.github/workflows/ci.yaml` | Test PRs/main; publish versioned Git releases through OIDC |
 | `infra/kind/` | Single-node local cluster |
 | `infra/argocd/` | Pinned Argo CD installation |
 | `infra/image-updater/` | Pinned Image Updater v1 installation and polling configuration |
@@ -37,19 +37,20 @@ For production, prefer promotion pull requests and immutable digests, protected 
 
 ## Tag Policy
 
-Every successful main build publishes one unique tag:
+Push a stable Git release tag to publish one human-readable image tag:
 
 ```text
-main-0000000042-001-sha-a1b2c3d4e5f6
-     run number attempt source SHA (first 12 characters)
+Git tag:   v1.0.1
+Image tag: 1.0.1
 ```
 
 - ECR must enforce **IMMUTABLE** tags. Never deploy a mutable `latest` tag.
-- The run number is zero-padded to 10 digits and the attempt to 3 digits. Alphabetical order then follows CI run order, including re-runs of the same run.
-- The updater only accepts `^main-[0-9]{10}-[0-9]{3}-sha-[0-9a-f]{12}$`. PRs and manually published release tags cannot accidentally deploy.
-- Re-running a job creates a distinct attempt tag rather than overwriting an immutable artifact.
+- Only stable MAJOR.MINOR.PATCH versions without leading zeros are accepted. CI verifies the tagged commit belongs to main history before obtaining AWS credentials.
+- Main pushes and PRs run tests but do not publish. Tag pushes run even when no application paths changed; GitHub does not apply path filters to tag pushes.
+- Image Updater uses semantic-version ordering, so `1.10.0` is newer than `1.9.0`. Old `main-*`, hash, and prerelease tags are ignored.
+- A version can be published only once. CI rejects an existing version; after a partial publish, inspect ECR and use a new version rather than deleting or moving release tags. Never rebuild a published version.
 - The build embeds its tag, full source SHA, and build time in `/version` and on the page. CI records the manifest digest too.
-- This ordering belongs to **one workflow in one repository**. Do not reset/recreate the workflow counter, mix publishers, exceed the padding widths, or use these tags as semantic release versions. A new workflow should use a new tag prefix and matching filter.
+- Protect `v*` Git tags with repository rulesets restricting creation, update, and deletion. The AWS trust allows this exact repository's `v*` tag refs, not main-branch refs. Main ancestry is a workflow check, not an IAM-enforced condition.
 - The highest eligible tag wins. Intermediate builds can be skipped between polls; this is convergence, not a deployment queue.
 
 ## 1. Prerequisites
@@ -93,7 +94,7 @@ The Kubernetes application name remains `demo-web`; only change the ECR reposito
 An AWS administrator performs the following setup. Nothing in this scaffold creates an ECR repository, IAM role, or OIDC provider automatically.
 
 1. Reuse/create the IAM OIDC provider `https://token.actions.githubusercontent.com` with audience `sts.amazonaws.com`.
-2. Create role `demo-k8s-github-ci` with the edited trust document `infra/aws/github-oidc-trust.json`. Its subject is restricted to this repository's `main` branch, not all GitHub repositories or PRs.
+2. Create role `demo-k8s-github-ci` with the edited trust document `infra/aws/github-oidc-trust.json`. Its subject is restricted to this repository's `v*` tag refs, not all GitHub repositories or PRs. The subject includes owner/repository IDs observed in CloudTrail; do not replace it with a name-only subject without checking your actual OIDC claims.
 3. Attach the edited `infra/aws/ecr-push-policy.json` as an inline policy. `GetAuthorizationToken` requires `Resource: "*"`; push operations are scoped to one repository.
 4. Configure the existing ECR repository for immutable tags and enable image scanning. Scanning alone does not block this pipeline; a production gate must inspect its findings explicitly.
 5. Grant your local AWS CLI identity the edited read policy in `infra/aws/ecr-read-policy.json`. It obtains the short-lived ECR credentials used by Image Updater and kubelet. Keep this identity separate from the CI publishing role.
@@ -117,7 +118,7 @@ Set these GitHub repository **Actions variables**, not AWS access-key secrets:
 | `AWS_REGION` | `us-east-1` |
 | `ECR_REPOSITORY` | `demo-web` |
 
-Commit and push the scaffold to `main` using your normal Git setup. CI tests the application, builds `linux/amd64` and `linux/arm64`, attaches provenance/SBOM, and pushes a tag. Do not initialize a second repository if this directory is already inside one. For a completely new repository:
+Commit and push the scaffold to `main` using your normal Git setup. Main pushes run tests; release tags build `linux/amd64` and `linux/arm64`, attach provenance/SBOM, and publish an image. Do not initialize a second repository if this directory is already inside one. For a completely new repository:
 
 ```bash
 git init -b main
@@ -127,7 +128,14 @@ git remote add origin git@github.com:YOUR_OWNER/demo-k8s.git
 git push -u origin main
 ```
 
-Wait for the first successful build. Copy its image tag from the Actions job summary into the local overlay's `newTag`, commit, and push. This prevents a first deployment from attempting to pull the intentionally nonexistent `bootstrap` image. GitOps-only commits do not trigger another image build, avoiding a commit/build loop. A manual workflow run only publishes when the selected branch is `main`.
+After the updated workflow is on main, create the first release:
+
+```bash
+git tag v1.0.1
+git push origin v1.0.1
+```
+
+Wait for the successful release build. Set the local overlay's `newTag` to `1.0.1`, commit, and push. This prevents a first deployment from pulling the intentionally nonexistent `bootstrap` image. GitOps-only commits do not trigger another image build. A manual workflow run only publishes when it targets a release tag, not a branch. For later releases, increment the version, for example `v1.0.2`.
 
 ## 4. Bootstrap kind and Argo CD
 
@@ -213,7 +221,7 @@ Open `http://localhost:8080`. During a rollout, the pod selected by port-forward
 ## 8. Interview Walkthrough
 
 1. Show the green Argo CD Application and the website's image tag and source commit.
-2. Edit the headline in `app/public/index.html`, commit, and push to `main`.
+2. Edit the headline in `app/public/index.html`, commit, push to `main`, and push a new release tag such as `v1.0.2` pointing to that commit.
 3. Show Actions tests, AWS OIDC authentication, multi-platform build, immutable tag, and image digest.
 4. Show the new tag in ECR. Image Updater polls roughly every minute; Argo CD Git refresh can add roughly another three minutes, plus build/image-pull time.
 5. Show the updater commit changing `gitops/apps/demo-web/overlays/local/kustomization.yaml`, then Argo CD's sync and the rolling update. No application deployment command is run by CI.
@@ -263,11 +271,11 @@ The remote controller manifests require internet access. Resolve/pin image diges
 
 | Symptom | Check |
 | --- | --- |
-| CI cannot assume role | OIDC provider, exact owner/repo/main subject, ARN variable, `id-token: write` |
-| CI cannot push | Repository exists in selected region/account; scoped push policy; a fresh run-attempt tag |
+| CI cannot assume role | OIDC provider, ID-qualified repository/release-tag subject, ARN variable, `id-token: write` |
+| CI cannot push | Repository exists in selected region/account; scoped push policy; version not already published |
 | `ImagePullBackOff` | `demo/ecr-pull` is fresh; image URI/tag exists; manifest includes ARM64 |
 | Updater gets 401 | `argocd/ecr-pull` is fresh and the local identity can read this ECR repository |
-| Updater never chooses tag | Exact regex, zero-padding, correct repository, updater logs |
+| Updater never chooses tag | Stable semantic version, correct repository, updater logs; old `main-*` tags are ignored |
 | Git write-back fails | Write-enabled deploy key, correct SSH repo URL, main branch protection, verified known-hosts |
 | Argo CD is OutOfSync | Git access, correct path/branch, controller logs, Application conditions |
 | Website still looks old | `/version`, current pod image, Git sync status, browser refresh, restart port-forward |

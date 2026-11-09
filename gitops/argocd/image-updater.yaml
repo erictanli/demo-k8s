@@ -16,8 +16,8 @@ spec:
         - alias: web
           imageName: 338250881800.dkr.ecr.ap-southeast-1.amazonaws.com/erictanli/demo-k8s
           commonUpdateSettings:
-            updateStrategy: alphabetical
-            allowTags: 'regexp:^main-[0-9]{10}-[0-9]{3}-sha-[0-9a-f]{12}$'
+            updateStrategy: semver
+            allowTags: 'regexp:^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
             pullSecret: pullsecret:argocd/ecr-pull
             forceUpdate: true
           manifestTargets:
