@@ -1,0 +1,20 @@
+:root { color-scheme: light; --ink: #202a27; --green: #086c51; --line: #cbd4ce; }
+* { box-sizing: border-box; }
+body { margin: 0; color: var(--ink); background: repeating-linear-gradient(90deg, transparent 0, transparent 79px, #dce5df55 80px), #f1f5f2; font-family: Georgia, 'Times New Roman', serif; letter-spacing: 0; }
+header, footer { display: flex; justify-content: space-between; gap: 20px; padding: 24px 6%; font: 12px 'Courier New', monospace; }
+header { border-bottom: 1px solid var(--line); }
+a { color: inherit; text-decoration: none; font-weight: bold; }
+.environment { color: var(--green); }
+main { max-width: 1000px; margin: 0 auto; padding: 56px 28px; }
+.eyebrow { font: 13px 'Courier New', monospace; color: var(--green); }
+.status { display: inline-block; width: 8px; height: 8px; background: var(--green); border-radius: 50%; margin-right: 8px; }
+h1 { margin: 24px 0; font-size: 64px; line-height: 1.08; font-weight: normal; }
+.message { font-size: 20px; color: #53625a; }
+section { margin-top: 44px; border-top: 2px solid var(--ink); }
+h2 { font: bold 13px 'Courier New', monospace; text-transform: uppercase; margin: 22px 0; }
+dl { margin: 0; }
+dl > div { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 16px; padding: 16px 0; border-top: 1px solid var(--line); font: 13px/1.6 'Courier New', monospace; }
+dt { color: #53625a; }
+dd { margin: 0; overflow-wrap: anywhere; }
+footer { border-top: 1px solid var(--line); color: #53625a; }
+@media (max-width: 600px) { h1 { font-size: 44px; } main { padding: 40px 22px; } header, footer { flex-wrap: wrap; } dl > div { grid-template-columns: 1fr; gap: 4px; } }

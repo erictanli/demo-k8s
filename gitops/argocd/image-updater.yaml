@@ -1,0 +1,25 @@
+apiVersion: argocd-image-updater.argoproj.io/v1alpha1
+kind: ImageUpdater
+metadata:
+  name: demo-web
+  namespace: argocd
+spec:
+  namespace: argocd
+  writeBackConfig:
+    method: git:secret:argocd/git-write-back
+    gitConfig:
+      branch: main
+      writeBackTarget: kustomization
+  applicationRefs:
+    - namePattern: demo-web
+      images:
+        - alias: web
+          imageName: 338250881800.dkr.ecr.ap-southeast-1.amazonaws.com/erictanli/demo-k8s
+          commonUpdateSettings:
+            updateStrategy: alphabetical
+            allowTags: 'regexp:^main-[0-9]{10}-[0-9]{3}-sha-[0-9a-f]{12}$'
+            pullSecret: pullsecret:argocd/ecr-pull
+            forceUpdate: true
+          manifestTargets:
+            kustomize:
+              name: demo-web

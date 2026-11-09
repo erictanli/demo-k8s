@@ -1,0 +1,78 @@
+name: Build and publish
+on:
+  pull_request:
+    paths:
+      - app/**
+      - .github/workflows/ci.yaml
+  push:
+    branches: [main]
+    paths:
+      - app/**
+      - .github/workflows/ci.yaml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.0'
+      - run: npm --prefix app test
+
+  publish:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Generate immutable deployment tag
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag=$(printf 'main-%010d-%03d-sha-%s' "$GITHUB_RUN_NUMBER" "$GITHUB_RUN_ATTEMPT" "${GITHUB_SHA:0:12}")
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+      - name: Build and push both CPU architectures
+        uses: docker/build-push-action@v6
+        id: build
+        with:
+          context: ./app
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ steps.metadata.outputs.tag }}
+          build-args: |
+            BUILD_TAG=${{ steps.metadata.outputs.tag }}
+            BUILD_SHA=${{ github.sha }}
+            BUILD_TIME=${{ steps.metadata.outputs.time }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: mode=max
+          sbom: true
+      - name: Record published artifact
+        env:
+          IMAGE: ${{ steps.ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ steps.metadata.outputs.tag }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          printf 'Image: `%s`\n\nDigest: `%s`\n' "$IMAGE" "$DIGEST" >> "$GITHUB_STEP_SUMMARY"

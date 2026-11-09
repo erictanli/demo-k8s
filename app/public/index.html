@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Release Desk</title>
+    <link rel="stylesheet" href="/style.css">
+    <script defer src="/client.js"></script>
+  </head>
+  <body>
+    <header><a href="/">RD / Release Desk</a><span class="environment">LOCAL / KIND</span></header>
+    <main>
+      <p class="eyebrow"><span class="status"></span> Deployment online</p>
+      <h1>Small change.<br>New release.</h1>
+      <p class="message">A little website, delivered continuously.</p>
+      <section aria-labelledby="release-heading">
+        <h2 id="release-heading">Running Release</h2>
+        <dl>
+          <div><dt>Image tag</dt><dd id="tag">Loading...</dd></div>
+          <div><dt>Source commit</dt><dd id="commit">Loading...</dd></div>
+          <div><dt>Built at</dt><dd id="builtAt">Loading...</dd></div>
+        </dl>
+      </section>
+    </main>
+    <footer><span>GitHub Actions / ECR / Argo CD</span><span>01 / Development</span></footer>
+  </body>
+</html>

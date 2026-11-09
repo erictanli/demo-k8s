@@ -1,0 +1,12 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Preview release website",
+			"type": "shell",
+			"command": "PORT=8090 node app/server.mjs",
+			"isBackground": true,
+			"problemMatcher": []
+		}
+	]
+}

@@ -1,0 +1,16 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: interview-demo
+  namespace: argocd
+spec:
+  sourceRepos:
+    - git@github.com:erictanli/demo-k8s.git
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: demo
+  namespaceResourceWhitelist:
+    - group: apps
+      kind: Deployment
+    - group: ""
+      kind: Service

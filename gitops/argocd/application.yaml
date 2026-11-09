@@ -1,0 +1,24 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: demo-web
+  namespace: argocd
+spec:
+  project: interview-demo
+  source:
+    repoURL: git@github.com:erictanli/demo-k8s.git
+    targetRevision: main
+    path: gitops/apps/demo-web/overlays/local
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: demo
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 3
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 1m

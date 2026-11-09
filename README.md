@@ -1,0 +1,279 @@
+# Local GitOps Interview Demo
+
+A small, real CI/CD loop: GitHub Actions builds a website, AWS ECR stores immutable multi-platform images, and Argo CD deploys them to kind on an Apple Silicon Mac.
+
+## Is this sensible?
+
+Yes. It demonstrates CI/CD separation, workload identity, artifact traceability, declarative delivery, reconciliation, and rolling deployments without paying for a cloud Kubernetes cluster. The Mac must be running Docker and have outbound access to GitHub, ECR, and public container registries. No inbound access to the Mac or Kubernetes credentials in GitHub Actions are needed.
+
+**Important correction:** Argo CD watches Git, not registry tags. **Argo CD Image Updater** polls ECR, selects an eligible image, and commits the image change back to Git. Argo CD then detects the Git change and reconciles the cluster. Polling means eventual deployment, not an instant push notification.
+
+```mermaid
+flowchart LR
+  Developer[Push app change to main] --> CI[GitHub Actions: test and build]
+  CI -->|AWS OIDC role| ECR[AWS ECR: immutable image]
+  ECR -->|poll tags| Updater[Image Updater on kind]
+  Updater -->|commit image tag| Git[Git: local Kustomize overlay]
+  Git -->|reconcile| Argo[Argo CD on kind]
+  Argo --> App[Two website replicas on kind]
+  ECR -->|authenticated image pull| App
+```
+
+For production, prefer promotion pull requests and immutable digests, protected environments, externally managed credentials, image signing and vulnerability gates. Automatic deployment of every main build is intentional for this **development demo**, not a production release policy.
+
+## Layout
+
+| Path | Purpose |
+| --- | --- |
+| `app/` | Dependency-free Node.js website, HTTP tests, Dockerfile |
+| `.github/workflows/ci.yaml` | Test pull requests; build and push main builds through OIDC |
+| `infra/kind/` | Single-node local cluster |
+| `infra/argocd/` | Pinned Argo CD installation |
+| `infra/image-updater/` | Pinned Image Updater v1 installation and polling configuration |
+| `infra/aws/` | Example OIDC trust and repository-scoped IAM policies |
+| `gitops/apps/demo-web/` | Application base and local image overlay |
+| `gitops/argocd/` | Restricted project, Application, and ImageUpdater CR |
+| `scripts/` | Explicitly context-scoped cluster setup and ECR token refresh |
+
+## Tag Policy
+
+Every successful main build publishes one unique tag:
+
+```text
+main-0000000042-001-sha-a1b2c3d4e5f6
+     run number attempt source SHA (first 12 characters)
+```
+
+- ECR must enforce **IMMUTABLE** tags. Never deploy a mutable `latest` tag.
+- The run number is zero-padded to 10 digits and the attempt to 3 digits. Alphabetical order then follows CI run order, including re-runs of the same run.
+- The updater only accepts `^main-[0-9]{10}-[0-9]{3}-sha-[0-9a-f]{12}$`. PRs and manually published release tags cannot accidentally deploy.
+- Re-running a job creates a distinct attempt tag rather than overwriting an immutable artifact.
+- The build embeds its tag, full source SHA, and build time in `/version` and on the page. CI records the manifest digest too.
+- This ordering belongs to **one workflow in one repository**. Do not reset/recreate the workflow counter, mix publishers, exceed the padding widths, or use these tags as semantic release versions. A new workflow should use a new tag prefix and matching filter.
+- The highest eligible tag wins. Intermediate builds can be skipped between polls; this is convergence, not a deployment queue.
+
+## 1. Prerequisites
+
+Install and start Docker Desktop (or another kind-compatible Docker runtime). Suggested Docker VM allocation: 4 CPUs and 8 GB RAM; the application is tiny, but Argo CD has several components.
+
+```bash
+brew install kind kubectl awscli node
+docker info
+kind version
+kubectl version --client
+node --version
+```
+
+Use Node.js 22 or newer and a supported kind version. The bootstrap pins `kindest/node:v1.32.2`; use kubectl within one minor version of the cluster. Both image architectures are built in CI because GitHub's default hosted runner is AMD64 and a Mac Studio is ARM64.
+
+The manifests pin Argo CD `v3.2.0`, Image Updater `v1.0.0`, and Node `22.22.0-alpine` as explicit scaffold baselines. These are **not a claim that those are the latest or security-approved versions**. Review release notes/security advisories and update compatible pins before use beyond this demo. In particular, do not mix the v1.0.0 CR schema with examples from newer Image Updater documentation without checking compatibility.
+
+## 2. Configure This Repository
+
+Create an empty GitHub repository, preferably named `demo-k8s`, with `main` as its default branch. This scaffold assumes GitHub Actions and an existing **private ECR repository in the same AWS account as the CI role**; adapt the policies if using cross-account access.
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` with your AWS region, account ID, and existing ECR repository name. This file is sourced as shell code by the helpers, so keep it trusted. Keep credentials out of it; use an AWS CLI profile/SSO session.
+
+Replace the example values in the committed configuration:
+
+| Example | Replace in |
+| --- | --- |
+| `YOUR_OWNER/demo-k8s` | Both `gitops/argocd/project.yaml` and `application.yaml`; OIDC trust JSON |
+| `111122223333`, `us-east-1`, `demo-web` ECR repository | All three AWS JSON files; image URI in local overlay and ImageUpdater CR |
+| `bootstrap` | Local overlay `newTag`, after the first successful CI run |
+
+The Kubernetes application name remains `demo-web`; only change the ECR repository component of image URIs if your ECR repository has a different name. The `.env` values do **not** substitute into YAML automatically.
+
+## 3. Prepare AWS and GitHub CI
+
+An AWS administrator performs the following setup. Nothing in this scaffold creates an ECR repository, IAM role, or OIDC provider automatically.
+
+1. Reuse/create the IAM OIDC provider `https://token.actions.githubusercontent.com` with audience `sts.amazonaws.com`.
+2. Create role `demo-k8s-github-ci` with the edited trust document `infra/aws/github-oidc-trust.json`. Its subject is restricted to this repository's `main` branch, not all GitHub repositories or PRs.
+3. Attach the edited `infra/aws/ecr-push-policy.json` as an inline policy. `GetAuthorizationToken` requires `Resource: "*"`; push operations are scoped to one repository.
+4. Configure the existing ECR repository for immutable tags and enable image scanning. Scanning alone does not block this pipeline; a production gate must inspect its findings explicitly.
+5. Grant your local AWS CLI identity the edited read policy in `infra/aws/ecr-read-policy.json`. It obtains the short-lived ECR credentials used by Image Updater and kubelet. Keep this identity separate from the CI publishing role.
+
+Example IAM commands **after replacing the JSON placeholders**, for an administrator with IAM permissions:
+
+```bash
+aws iam create-role --role-name demo-k8s-github-ci \
+  --assume-role-policy-document file://infra/aws/github-oidc-trust.json
+aws iam put-role-policy --role-name demo-k8s-github-ci \
+  --policy-name EcrPush --policy-document file://infra/aws/ecr-push-policy.json
+```
+
+For an existing role, review/update its trust instead of running `create-role` again. Confirm the OIDC provider exists before creating the role.
+
+Set these GitHub repository **Actions variables**, not AWS access-key secrets:
+
+| Variable | Example |
+| --- | --- |
+| `AWS_ROLE_ARN` | `arn:aws:iam::111122223333:role/demo-k8s-github-ci` |
+| `AWS_REGION` | `us-east-1` |
+| `ECR_REPOSITORY` | `demo-web` |
+
+Commit and push the scaffold to `main` using your normal Git setup. CI tests the application, builds `linux/amd64` and `linux/arm64`, attaches provenance/SBOM, and pushes a tag. Do not initialize a second repository if this directory is already inside one. For a completely new repository:
+
+```bash
+git init -b main
+git add .
+git commit -m "Scaffold local GitOps demo"
+git remote add origin git@github.com:YOUR_OWNER/demo-k8s.git
+git push -u origin main
+```
+
+Wait for the first successful build. Copy its image tag from the Actions job summary into the local overlay's `newTag`, commit, and push. This prevents a first deployment from attempting to pull the intentionally nonexistent `bootstrap` image. GitOps-only commits do not trigger another image build, avoiding a commit/build loop. A manual workflow run only publishes when the selected branch is `main`.
+
+## 4. Bootstrap kind and Argo CD
+
+```bash
+bash scripts/bootstrap.sh
+kubectl --context kind-interview-demo -n argocd get pods
+```
+
+The helper reuses a cluster named `interview-demo` if present; delete/recreate it intentionally if its configuration is stale. All helper kubectl calls specify `kind-interview-demo`, irrespective of your current context. Server-side apply with force-conflicts is limited to this dedicated demo cluster. The cluster is local and single-node, not highly available. Two replicas demonstrate rolling updates, not node resilience.
+
+## 5. Give Argo CD and Image Updater Git Access
+
+Create a dedicated, passwordless SSH deploy key **outside this repository**. The private key becomes a Kubernetes Secret, so this is a demo credential, not an encrypted-at-rest secret-management solution. Do not reuse your personal SSH key or commit the key.
+
+```bash
+ssh-keygen -t ed25519 -C demo-k8s-gitops -N '' -f "$HOME/.ssh/demo-k8s-gitops"
+```
+
+Add the **public** key to this repository's GitHub Deploy keys and enable **Allow write access**. Do not overwrite an existing key at that path. The default Argo CD SSH known-hosts ConfigMap supplies GitHub host verification; verify it against GitHub's published fingerprints rather than disabling verification if SSH fails.
+
+Create one repository secret for Argo CD reads and an explicit write-back secret for Image Updater:
+
+```bash
+kubectl --context kind-interview-demo -n argocd create secret generic demo-repository \
+  --from-literal=type=git \
+  --from-literal=url=git@github.com:YOUR_OWNER/demo-k8s.git \
+  --from-file=sshPrivateKey="$HOME/.ssh/demo-k8s-gitops" \
+  --dry-run=client -o yaml | kubectl --context kind-interview-demo apply -f -
+kubectl --context kind-interview-demo -n argocd label secret demo-repository \
+  argocd.argoproj.io/secret-type=repository --overwrite
+kubectl --context kind-interview-demo -n argocd create secret generic git-write-back \
+  --from-file=sshPrivateKey="$HOME/.ssh/demo-k8s-gitops" \
+  --dry-run=client -o yaml | kubectl --context kind-interview-demo apply -f -
+```
+
+Branch protection that requires PRs will reject direct updater commits. For this isolated demo, permit this deploy key to push to `main`, or use a separate writable GitOps branch and update both the Application and updater branch. In production, use a bot/GitHub App and a supported PR-based promotion workflow; do not weaken a shared production branch's rules for the demo.
+
+## 6. Authenticate to ECR and Deploy
+
+Use a local AWS CLI SSO/profile session with the read policy, then refresh **both** namespace-scoped secrets:
+
+```bash
+export AWS_PROFILE=your-demo-profile
+aws sso login --profile "$AWS_PROFILE"
+bash scripts/refresh-ecr-secrets.sh
+kubectl --context kind-interview-demo apply -f gitops/argocd/project.yaml
+kubectl --context kind-interview-demo apply -f gitops/argocd/application.yaml
+kubectl --context kind-interview-demo apply -f gitops/argocd/image-updater.yaml
+kubectl --context kind-interview-demo -n demo get pods -w
+```
+
+For a non-SSO profile, authenticate using your organization's usual AWS CLI procedure instead. Stop the watch with Ctrl+C once pods are ready, then:
+
+```bash
+kubectl --context kind-interview-demo -n demo rollout status deployment/demo-web --timeout=300s
+```
+
+ECR passwords expire after **12 hours** and may become unusable sooner if the originating AWS session expires. Re-run the refresh helper before each interview and periodically for longer sessions. It stores only an ECR Docker token in each namespace, not AWS keys, and uses a restricted temporary file instead of putting the token on the command line. Image Updater reads its per-image secret on each poll, so no controller restart is needed after token refresh.
+
+This is deliberately **not unattended credential rotation**. In a long-running installation, use a secret controller/credential provider with renewable identity and ensure both registry discovery and kubelet pulls renew their credentials. A local kind cluster has no EKS IRSA/Pod Identity automatically.
+
+## 7. Open the Demo
+
+Run each port-forward in its own terminal. Both bind to localhost by default; do not expose the Argo admin interface publicly.
+
+```bash
+kubectl --context kind-interview-demo -n argocd port-forward svc/argocd-server 8443:443
+```
+
+Open `https://localhost:8443`. The default local certificate is self-signed. Sign in as `admin` using the initial password printed **locally** by this command, then change it after the demo:
+
+```bash
+kubectl --context kind-interview-demo -n argocd get secret argocd-initial-admin-secret \
+  -o jsonpath='{.data.password}' | base64 --decode; printf '\n'
+```
+
+```bash
+kubectl --context kind-interview-demo -n demo port-forward svc/demo-web 8080:80
+```
+
+Open `http://localhost:8080`. During a rollout, the pod selected by port-forward can terminate; restart the command if necessary. A production ingress/load balancer would avoid that demo-only inconvenience.
+
+## 8. Interview Walkthrough
+
+1. Show the green Argo CD Application and the website's image tag and source commit.
+2. Edit the headline in `app/public/index.html`, commit, and push to `main`.
+3. Show Actions tests, AWS OIDC authentication, multi-platform build, immutable tag, and image digest.
+4. Show the new tag in ECR. Image Updater polls roughly every minute; Argo CD Git refresh can add roughly another three minutes, plus build/image-pull time.
+5. Show the updater commit changing `gitops/apps/demo-web/overlays/local/kustomization.yaml`, then Argo CD's sync and the rolling update. No application deployment command is run by CI.
+6. Refresh the website to show the new headline, tag, and source SHA. The source SHA identifies the application build, not the later bot deployment commit.
+7. Optionally demonstrate drift correction: scale the deployment to one replica with kubectl and observe Argo CD restore two through self-heal.
+
+Useful observability:
+
+```bash
+kubectl --context kind-interview-demo -n argocd get application demo-web
+kubectl --context kind-interview-demo -n argocd get imageupdater demo-web -o yaml
+kubectl --context kind-interview-demo -n argocd logs deployment/argocd-image-updater-controller --tail=80
+kubectl --context kind-interview-demo -n demo get pods -w
+```
+
+For rollback, **pause the updater first**, then revert the relevant bot image commit in Git and push. Auto-sync will otherwise redeploy the highest eligible tag and undo your rollback. Do not rely on `kubectl rollout undo` under self-heal.
+
+```bash
+kubectl --context kind-interview-demo -n argocd delete imageupdater demo-web
+git pull --rebase origin main
+git log --oneline -- gitops/apps/demo-web/overlays/local/kustomization.yaml
+git revert <image-update-commit>
+git push origin main
+```
+
+Allow any in-flight reconciliation to settle before the revert and confirm no newer bot commit raced it. Before reapplying the ImageUpdater CR, add the bad tag(s) to that image's `commonUpdateSettings.ignoreTags` and commit the exclusion, or publish a fix. Resuming without an exclusion/fix intentionally selects the bad highest tag again. The ImageUpdater CR is manually bootstrapped here; editing its YAML also requires reapplying it.
+
+## Local Development and Checks
+
+```bash
+npm --prefix app test
+npm --prefix app start
+```
+
+The local website runs at `http://localhost:8080`; stop the service port-forward first if it already occupies that port. To check the deployment without a cluster:
+
+```bash
+kubectl kustomize gitops/apps/demo-web/overlays/local
+kubectl kustomize infra/image-updater
+kubectl kustomize infra/argocd
+bash -n scripts/common.sh scripts/bootstrap.sh scripts/refresh-ecr-secrets.sh
+```
+
+The remote controller manifests require internet access. Resolve/pin image digests and vendor these manifests for a fully repeatable offline demo. Keep representative screenshots and a recorded successful run available for interview network failures.
+
+## Troubleshooting and Cleanup
+
+| Symptom | Check |
+| --- | --- |
+| CI cannot assume role | OIDC provider, exact owner/repo/main subject, ARN variable, `id-token: write` |
+| CI cannot push | Repository exists in selected region/account; scoped push policy; a fresh run-attempt tag |
+| `ImagePullBackOff` | `demo/ecr-pull` is fresh; image URI/tag exists; manifest includes ARM64 |
+| Updater gets 401 | `argocd/ecr-pull` is fresh and the local identity can read this ECR repository |
+| Updater never chooses tag | Exact regex, zero-padding, correct repository, updater logs |
+| Git write-back fails | Write-enabled deploy key, correct SSH repo URL, main branch protection, verified known-hosts |
+| Argo CD is OutOfSync | Git access, correct path/branch, controller logs, Application conditions |
+| Website still looks old | `/version`, current pod image, Git sync status, browser refresh, restart port-forward |
+
+```bash
+kind delete cluster --name interview-demo
+```
+
+This deletes the local cluster only. Stop port-forwards, revoke/remove the demo deploy key, and remove temporary IAM access when finished. ECR storage and transfer may incur small charges; deleting kind does not remove ECR images, IAM roles, or GitHub resources. Retain any deployed/rollback image tags when defining an ECR lifecycle policy.
