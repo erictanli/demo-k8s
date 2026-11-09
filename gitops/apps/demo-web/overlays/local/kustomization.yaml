@@ -6,4 +6,4 @@ resources:
 images:
   - name: demo-web
     newName: 338250881800.dkr.ecr.ap-southeast-1.amazonaws.com/erictanli/demo-k8s
-    newTag: 1.3.1
+    newTag: 1.4.0
