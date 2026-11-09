@@ -6,8 +6,10 @@
     "Action": "sts:AssumeRoleWithWebIdentity",
     "Condition": {
       "StringEquals": {
-        "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-        "token.actions.githubusercontent.com:sub": "repo:erictanli/demo-k8s:ref:refs/heads/main"
+        "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+      },
+      "StringLike": {
+        "token.actions.githubusercontent.com:sub": "repo:erictanli@16661444/demo-k8s@1451730229:ref:refs/tags/v*"
       }
     }
   }]
