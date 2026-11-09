@@ -2,12 +2,7 @@
 
 A small, real CI/CD loop: GitHub Actions builds a website, AWS ECR stores immutable multi-platform images, and Argo CD deploys them to kind on an Apple Silicon Mac.
 
-## Is this sensible?
-
-Yes. It demonstrates CI/CD separation, workload identity, artifact traceability, declarative delivery, reconciliation, and rolling deployments without paying for a cloud Kubernetes cluster. The Mac must be running Docker and have outbound access to GitHub, ECR, and public container registries. No inbound access to the Mac or Kubernetes credentials in GitHub Actions are needed.
-
-**Important correction:** Argo CD watches Git, not registry tags. **Argo CD Image Updater** polls ECR, selects an eligible image, and commits the image change back to Git. Argo CD then detects the Git change and reconciles the cluster. Polling means eventual deployment, not an instant push notification.
-
+## Overall flowchat
 ```mermaid
 flowchart LR
   Developer[Push release tag v1.0.1] --> CI[GitHub Actions: test and build]
